@@ -15,6 +15,8 @@
   hosts: localhost
   connection: local
   become: yes
+  vars_files:
+    - /home/cloudadmin/external_vars.yaml
 
   # https://stackoverflow.com/questions/23945201/how-to-run-only-one-task-in-ansible-playbook
   # https://docs.ansible.com/ansible/latest/user_guide/playbooks_tags.html
@@ -38,12 +40,16 @@
         update_cache: yes
       become: yes
 
-    - name: Install podman
+    - name: Update all packages to their latest version
       ansible.builtin.apt:
-        name: podman
+        name: "*"
         state: latest
+
+    - name: Install podman
+      apt:
+        name: podman
+        state: present
       become: yes
-      when: "'podman' not in ansible_facts.packages"
       tags: install_podman
 
     - name: Login to public registry and create ${XDG_RUNTIME_DIR}/containers/auth.json
@@ -162,7 +168,7 @@
     - name: Permit traffic in default zone for https service
       # https://docs.ansible.com/ansible/latest/collections/ansible/posix/firewalld_module.html
       ansible.posix.firewalld:
-        service: https
+        port: 443/tcp
         permanent: yes
         state: enabled
       vars:
@@ -172,7 +178,7 @@
     - name: Permit traffic in default zone for http service
       # https://docs.ansible.com/ansible/latest/collections/ansible/posix/firewalld_module.html
       ansible.posix.firewalld:
-        service: http
+        port: 80/tcp
         permanent: yes
         state: enabled
       vars:

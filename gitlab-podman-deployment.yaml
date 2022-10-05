@@ -12,7 +12,8 @@
 # --tags "<tag_to_run>": Only run tasks with specified tag
 
 - name: Gitlab-CE Stage Container from Public registry
-  hosts: 192.168.1.101
+  hosts: localhost
+  connection: local
   become: yes
 
   # https://stackoverflow.com/questions/23945201/how-to-run-only-one-task-in-ansible-playbook

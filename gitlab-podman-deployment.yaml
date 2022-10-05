@@ -1,0 +1,195 @@
+# Deploy GitLab-CE as Podman Container
+# Author: Art Aquino / art.aquino@artlabs.cloud
+#
+# https://docs.gitlab.com/ee/install/docker.html
+#
+# Test this playbook from your development machine
+# with the following command:
+# ansible-playbook -i <hosts_file> gitlab-podman-deployment.yml -u <remote_user> --private-key ~/.ssh/id_rsa --check --verbose
+#
+# --check parameter  : don't make any changes; instead, try to predict some of the changes that may occur
+# --verbose parameter: verbose mode (-vvv for more, -vvvv to enable connection debugging)
+# --tags "<tag_to_run>": Only run tasks with specified tag
+
+- name: Gitlab-CE Stage Container from Public registry
+  hosts: 192.168.1.101
+  become: yes
+
+  # https://stackoverflow.com/questions/23945201/how-to-run-only-one-task-in-ansible-playbook
+  # https://docs.ansible.com/ansible/latest/user_guide/playbooks_tags.html
+  tags: image_stage
+
+  vars:
+    # The public registry to pull from:
+    # docker.io, registry.access.redhat.com, registry.redhat.io, quay.io
+    public_registry: docker.io
+    public_registry_username: "{{ public_registry_username }}"
+    public_registry_password: "{{ public_registry_password }}"
+
+  tasks:
+    - name: Gather the package facts
+      ansible.builtin.package_facts:
+        manager: auto
+      tags: package_facts
+
+    - name: Run the equivalent of "apt-get update" as a separate step
+      ansible.builtin.apt:
+        update_cache: yes
+      become: yes
+
+    - name: Install podman
+      ansible.builtin.apt:
+        name: podman
+        state: latest
+      become: yes
+      when: "'podman' not in ansible_facts.packages"
+      tags: install_podman
+
+    - name: Login to public registry and create ${XDG_RUNTIME_DIR}/containers/auth.json
+      containers.podman.podman_login:
+        username: '{{ public_registry_username }}'
+        password: '{{ public_registry_password }}'
+        registry: '{{ public_registry }}'
+      tags: public_pull
+
+    - name: Pull an image from a public container registry
+      containers.podman.podman_image:
+        name: "{{ public_registry }}/gitlab/gitlab-ce"
+        tag: latest
+        pull: yes
+      tags: public_registry_pull
+
+    - name: Create Persistent Volumes in a Loop (Default Location)
+      containers.podman.podman_volume:
+        state: present
+        name: "{{ item }}"
+      # https://docs.ansible.com/ansible/latest/user_guide/playbooks_loops.html
+      loop:
+        - gitlab_config
+        - gitlab_logs
+        - gitlab_data
+      tags: persistent_volumes
+
+    # SSL Config: https://docs.gitlab.com/omnibus/settings/ssl.html#details-on-how-gitlab-and-ssl-work
+    # Storing the certs in a repo may not be secure
+    # This is just an example of possibilities
+    - name: Get persistent volume path
+      containers.podman.podman_volume:
+        state: present
+        name: "gitlab_config"
+      register: config_volume
+      tags: pvolume
+
+    - name: Set persistent volume path fact
+      set_fact:
+        config_volume_path: "{{ config_volume.volume.Mountpoint }}"
+      tags: pvolume
+
+    - name: Print Config Persistent Path
+      debug:
+        var: config_volume_path
+      tags: pvolume
+
+    - name: Install git
+      ansible.builtin.apt:
+        name: git
+        state: latest
+      become: yes
+      when: "'git' not in ansible_facts.packages"
+      tags: install_git
+
+    - name: Install firewalld
+      ansible.builtin.apt:
+        name: firewalld
+        state: latest
+      become: yes
+      when: "'firewalld' not in ansible_facts.packages"
+      tags: install_firewalld
+
+    #  - name: Git checkout
+    #    # https://docs.ansible.com/ansible/latest/collections/ansible/builtin/git_module.html
+    #    git:
+    #      repo: 'https://{{ gitlab_user }}:{{ gitlab_token }}@artlabs.cloud/gitlab/artlabs/artlabs-certs.git'
+    #      dest: '/root/git-pulls/artlabs-certs/'
+    #      version: master
+    #      accept_hostkey: true
+    #    tags: ssl
+
+    #  - name: Create gitlab trusted-certs directory
+    #    ansible.builtin.file:
+    #      path: "{{ config_volume_path }}/trusted-certs"
+    #      state: directory
+    #      mode: '0755'
+    #    tags: ssl
+
+    #  - name: Copy certs to Gitlab trusted certs persistent volume - set owner to root - set perms to 600
+    #    # https://docs.ansible.com/ansible/latest/collections/ansible/builtin/copy_module.html
+    #    copy:
+    #      remote_src: yes
+    #      # If specific file not specified, copies all files in path.
+    #      # ONLY copy the public cert:
+    #      # https://docs.gitlab.com/omnibus/settings/ssl.html#install-custom-public-certificates
+    #      src: "/root/git-pulls/artlabs-certs/cert.pem"
+    #      dest: "{{ config_volume_path }}/trusted-certs/artlabs.cloud.pem"
+    #      owner: root
+    #      mode: 600
+    #    tags: ssl
+
+    - name: Run Gitlab-CE Container
+      # https://docs.ansible.com/ansible/latest/collections/containers/podman/podman_container_module.html
+      containers.podman.podman_container:
+        name: gitlab-ce
+        image: "{{ public_registry }}/gitlab/gitlab-ce:latest"
+        state: started
+        recreate: yes
+        ports:
+          - "443:443"
+          - "80:80"
+          # Custom SSH port so we can manage VM with Ansible and other apps
+          # We will set this custom port as the Gitlab SSH port in the
+          # container environment variable: GITLAB_OMNIBUS_CONFIG
+          - "2224:22"
+        volumes:
+          - "gitlab_config:/etc/gitlab"
+          - "gitlab_logs:/var/log/gitlab"
+          - "gitlab_data:/var/opt/gitlab"
+        env:
+          # https://docs.gitlab.com/ee/install/docker.html#pre-configure-docker-container
+          GITLAB_OMNIBUS_CONFIG: "external_url 'http://gitlab.cloudbox.network'; gitlab_rails['gitlab_shell_ssh_port'] = 2224;"
+      tags: run_container
+
+    - name: Permit traffic in default zone for https service
+      # https://docs.ansible.com/ansible/latest/collections/ansible/posix/firewalld_module.html
+      ansible.posix.firewalld:
+        service: https
+        permanent: yes
+        state: enabled
+      vars:
+        ansible_python_interpreter: '/usr/bin/python3'
+      tags: firewall
+
+    - name: Permit traffic in default zone for http service
+      # https://docs.ansible.com/ansible/latest/collections/ansible/posix/firewalld_module.html
+      ansible.posix.firewalld:
+        service: http
+        permanent: yes
+        state: enabled
+      vars:
+        ansible_python_interpreter: '/usr/bin/python3'
+      tags: firewall
+
+    - name: Permit traffic in default zone for custom Gitlab SSH port
+      ansible.posix.firewalld:
+        port: 2224/tcp
+        permanent: yes
+        state: enabled
+      vars:
+        ansible_python_interpreter: '/usr/bin/python3'
+      tags: firewall
+    
+    - name: Restart firewall service
+      ansible.builtin.systemd:
+        state: restarted
+        daemon_reload: yes
+        name: firewalld
+      tags: firewall

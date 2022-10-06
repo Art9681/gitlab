@@ -15,8 +15,8 @@
   hosts: localhost
   connection: local
   become: yes
-  vars_files:
-    - /home/cloudadmin/external_vars.yaml
+    #vars_files:
+    #- /home/cloudadmin/external_vars.yaml
 
   # https://stackoverflow.com/questions/23945201/how-to-run-only-one-task-in-ansible-playbook
   # https://docs.ansible.com/ansible/latest/user_guide/playbooks_tags.html
@@ -26,8 +26,8 @@
     # The public registry to pull from:
     # docker.io, registry.access.redhat.com, registry.redhat.io, quay.io
     public_registry: docker.io
-    public_registry_username: "{{ public_registry_username }}"
-    public_registry_password: "{{ public_registry_password }}"
+    #public_registry_username: "{{ public_registry_username }}"
+    #public_registry_password: "{{ public_registry_password }}"
 
   tasks:
     - name: Gather the package facts
@@ -52,13 +52,6 @@
       become: yes
       tags: install_podman
 
-    - name: Login to public registry and create ${XDG_RUNTIME_DIR}/containers/auth.json
-      containers.podman.podman_login:
-        username: '{{ public_registry_username }}'
-        password: '{{ public_registry_password }}'
-        registry: '{{ public_registry }}'
-      tags: public_pull
-
     - name: Pull an image from a public container registry
       containers.podman.podman_image:
         name: "{{ public_registry }}/gitlab/gitlab-ce"
@@ -75,6 +68,7 @@
         - gitlab_config
         - gitlab_logs
         - gitlab_data
+        - gitlab_certs
       tags: persistent_volumes
 
     # SSL Config: https://docs.gitlab.com/omnibus/settings/ssl.html#details-on-how-gitlab-and-ssl-work
@@ -149,20 +143,21 @@
         image: "{{ public_registry }}/gitlab/gitlab-ce:latest"
         state: started
         recreate: yes
-        ports:
-          - "443:443"
-          - "80:80"
+        network: host
+          #        ports:
+          #- "443:443"
+          #- "80:80"
           # Custom SSH port so we can manage VM with Ansible and other apps
           # We will set this custom port as the Gitlab SSH port in the
           # container environment variable: GITLAB_OMNIBUS_CONFIG
-          - "2224:22"
+          #- "2224:22"
         volumes:
           - "gitlab_config:/etc/gitlab"
           - "gitlab_logs:/var/log/gitlab"
           - "gitlab_data:/var/opt/gitlab"
         env:
           # https://docs.gitlab.com/ee/install/docker.html#pre-configure-docker-container
-          GITLAB_OMNIBUS_CONFIG: "external_url 'http://gitlab.cloudbox.network'; gitlab_rails['gitlab_shell_ssh_port'] = 2224;"
+          GITLAB_OMNIBUS_CONFIG: "external_url 'http://192.168.0.242'; gitlab_rails['gitlab_shell_ssh_port'] = 2224;"
       tags: run_container
 
     - name: Permit traffic in default zone for https service
